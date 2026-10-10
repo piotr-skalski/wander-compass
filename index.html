@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wander Compass</title>
+<meta name="description" content="A compass that points at your destination instead of north, and shows how far away it is.">
+<meta name="theme-color" content="#EEF1EC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F1512" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Wander">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%2317211C'/%3E%3Cpath d='M46 18 37 37 27 27z' fill='%23FF5DB4'/%3E%3Cpath d='M18 46 27 27 37 37z' fill='%2397A69D'/%3E%3C/svg%3E">
+<style>
+/* Layout: one phone screen, stacked top to bottom: destination, dial, distance, heading source. */
+:root {
+  --bg: #EEF1EC;
+  --surface: #F9FAF7;
+  --ink: #17211C;
+  --muted: #5A675F;
+  --line: #C6CFC8;
+  --accent: #C2187A;      /* the magenta of a GPS course line */
+  --on-accent: #FFFFFF;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0F1512;
+    --surface: #171F1B;
+    --ink: #E9EFEA;
+    --muted: #97A69D;
+    --line: #2D3832;
+    --accent: #FF5DB4;
+    --on-accent: #1A0612;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.4 var(--font);
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+[hidden] { display: none !important; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; touch-action: manipulation; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+h1, h2, p, dl, dd, ul { margin: 0; }
+
+.sr {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+
+.app {
+  min-height: 100vh;
+  min-height: 100dvh;
+  max-width: 30rem;
+  margin: 0 auto;
+  padding:
+    calc(env(safe-area-inset-top, 0px) + 20px)
+    max(16px, env(safe-area-inset-right, 0px))
+    calc(env(safe-area-inset-bottom, 0px) + 16px)
+    max(16px, env(safe-area-inset-left, 0px));
+  display: flex;
+  flex-direction: column;
+}
+.view { flex: 1; display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+
+.label {
+  font-size: .75rem; font-weight: 700; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--muted);
+}
+.msg { color: var(--muted); font-size: .9375rem; min-height: 2.8em; }
+.fine { color: var(--muted); font-size: .8125rem; margin-top: auto; }
+
+.btn-primary {
+  background: var(--accent); color: var(--on-accent);
+  border: 0; border-radius: 12px; padding: 13px 20px;
+  font-weight: 700; min-height: 48px;
+}
+.btn-primary:disabled { opacity: .55; }
+.btn-ghost {
+  background: transparent; border: 1.5px solid var(--line); border-radius: 12px;
+  padding: 9px 14px; font-weight: 600; min-height: 44px; flex: none;
+}
+
+/* ---------- destination picker ---------- */
+#setup h1 {
+  font-size: clamp(2.5rem, 13vw, 3.5rem); font-weight: 800;
+  letter-spacing: -.035em; line-height: 1;
+}
+.lede { color: var(--muted); max-width: 34ch; }
+.search { display: flex; gap: 8px; margin-top: 8px; }
+.search input {
+  flex: 1; min-width: 0; min-height: 48px; padding: 12px 14px;
+  background: var(--surface); border: 1.5px solid var(--line); border-radius: 12px;
+}
+.search input::placeholder { color: var(--muted); }
+#setup .msg { min-height: 0; }
+#setup .msg:empty { display: none; }
+
+.places { list-style: none; padding: 0; display: flex; flex-direction: column; }
+.places button {
+  width: 100%; text-align: left; background: none; border: 0;
+  border-bottom: 1px solid var(--line); padding: 13px 0;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; align-items: center;
+}
+.place-name { font-weight: 700; overflow-wrap: anywhere; }
+.place-detail { grid-column: 1; color: var(--muted); font-size: .875rem; overflow-wrap: anywhere; }
+.place-dist {
+  grid-column: 2; grid-row: 1 / span 2;
+  font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+#recentWrap { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+
+/* ---------- compass ---------- */
+.dest { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.dest-text { min-width: 0; }
+.dest-name {
+  font-size: 1.375rem; font-weight: 800; letter-spacing: -.015em; line-height: 1.15;
+  overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+
+.dial-wrap { flex: 1; min-height: 0; display: grid; place-items: center; }
+.dial-wrap svg { display: block; width: min(100%, 50vh, 26rem); width: min(100%, 50dvh, 26rem); height: auto; }
+
+.face { fill: var(--surface); stroke: var(--line); stroke-width: 2; }
+.tick { stroke: var(--muted); stroke-width: 1.5; opacity: .5; }
+.tick.major { stroke-width: 2.5; opacity: 1; }
+.card { fill: var(--muted); font: 700 17px var(--font); }
+.card.north { fill: var(--ink); }
+.fwd { fill: var(--ink); transition: opacity .3s; }
+.needle-tip { fill: var(--accent); }
+.needle-tail { fill: var(--line); }
+.needle-pin { fill: var(--surface); stroke: var(--ink); stroke-width: 2.5; }
+#needle { transition: opacity .3s; }
+.no-fix #needle { opacity: .18; }
+.north-up .fwd { opacity: 0; }
+
+.readout { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.distance {
+  font-size: clamp(3rem, 17vw, 5rem); font-weight: 800; line-height: .95;
+  letter-spacing: -.04em; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.unit { font-size: .38em; font-weight: 700; letter-spacing: 0; margin-left: .3em; color: var(--muted); }
+.caption { color: var(--muted); font-size: .875rem; margin-top: 6px; }
+.stats { display: flex; flex-direction: column; gap: 8px; text-align: right; flex: none; }
+.stats dt { font-size: .6875rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+.stats dd { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.seg {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px;
+  background: var(--surface); border: 1.5px solid var(--line); border-radius: 14px;
+}
+.seg button {
+  border: 0; background: transparent; border-radius: 10px;
+  padding: 10px 8px; min-height: 44px; font-weight: 600; color: var(--muted);
+}
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+
+/* Phone mounted sideways: dial on the left, numbers on the right. */
+@media (orientation: landscape) and (max-height: 540px) {
+  .app { max-width: 56rem; }
+  #nav {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-auto-rows: min-content; column-gap: 28px; row-gap: 10px; align-content: center;
+  }
+  #nav > * { grid-column: 2; }
+  #nav .dial-wrap { grid-column: 1; grid-row: 1 / span 6; }
+  .dial-wrap svg { width: min(100%, 84vh); width: min(100%, 84dvh); }
+  .msg { min-height: 0; }
+}
+</style>
+</head>
+<body>
+<main class="app">
+
+  <section id="setup" class="view" hidden>
+    <p class="label">Wander Compass</p>
+    <h1>Where to?</h1>
+    <p class="lede">Pick a place. The needle points straight at it and shows how far it is. Which roads you take is up to you.</p>
+
+    <form id="searchForm" class="search" autocomplete="off">
+      <label class="sr" for="q">Destination</label>
+      <input id="q" name="q" type="search" enterkeyhint="search" placeholder="Town, address or coordinates" spellcheck="false" required>
+      <button id="searchBtn" class="btn-primary" type="submit">Find</button>
+    </form>
+    <p id="searchMsg" class="msg" role="status" aria-live="polite"></p>
+    <ul id="results" class="places"></ul>
+
+    <div id="recentWrap" hidden>
+      <h2 class="label">Recent</h2>
+      <ul id="recent" class="places"></ul>
+    </div>
+
+    <p class="fine">Place search by OpenStreetMap. Your position stays on this device.</p>
+  </section>
+
+  <section id="nav" class="view" hidden>
+    <header class="dest">
+      <div class="dest-text">
+        <p class="label">Heading to</p>
+        <h1 id="destName" class="dest-name"></h1>
+      </div>
+      <button id="changeBtn" class="btn-ghost" type="button">Change</button>
+    </header>
+
+    <div class="dial-wrap">
+      <svg id="dial" class="no-fix north-up" viewBox="-176 -176 352 352" role="img" aria-label="Compass dial with a needle pointing at your destination">
+        <polygon id="fwd" class="fwd" points="-10,-175 10,-175 0,-159"/>
+        <g id="ring">
+          <circle class="face" r="122"/>
+          <g id="ticks"></g>
+          <g id="cards"></g>
+        </g>
+        <g id="needle">
+          <polygon class="needle-tail" points="-16,0 16,0 0,60"/>
+          <polygon class="needle-tip" points="0,-104 16,0 -16,0"/>
+          <circle class="needle-pin" r="6"/>
+        </g>
+      </svg>
+    </div>
+
+    <div class="readout">
+      <div>
+        <p class="distance"><span id="distNum">--</span><span id="distUnit" class="unit"></span></p>
+        <p class="caption">in a straight line</p>
+      </div>
+      <dl class="stats">
+        <div><dt>Bearing</dt><dd id="statBearing">--</dd></div>
+        <div><dt>GPS</dt><dd id="statAcc">--</dd></div>
+      </dl>
+    </div>
+
+    <p id="hint" class="msg" role="status" aria-live="polite"></p>
+    <button id="compassBtn" class="btn-primary" type="button" hidden>Turn on compass</button>
+
+    <div class="seg" role="group" aria-label="What the needle turns with">
+      <button id="modeCompass" type="button" aria-pressed="true">Phone compass</button>
+      <button id="modeCourse" type="button" aria-pressed="false">Direction of travel</button>
+    </div>
+  </section>
+
+  <noscript><p>Wander Compass needs JavaScript to read your position and compass.</p></noscript>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const EARTH_R = 6371008.8;   // mean Earth radius, metres
+  const ARRIVE_M = 30;
+  const WEAK_GPS_M = 150;
+
+  const store = {
+    get(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw == null ? fallback : JSON.parse(raw);
+      } catch (e) { return fallback; }
+    },
+    set(key, value) {
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* private mode */ }
+    },
+  };
+
+  const state = {
+    dest: store.get('wc.dest', null),          // { name, detail, lat, lon }
+    mode: store.get('wc.mode', 'compass'),     // 'compass' | 'course'
+    pos: null,                                 // { lat, lon, acc }
+    geoError: null,                            // 'insecure' | 'unsupported' | 'denied'
+    watchId: null,
+    compass: null,                             // heading from the phone sensor, degrees from north
+    course: null,                              // heading from movement, degrees from north
+    anchor: null,                              // last point the course was measured from
+    listening: false,
+    needsMotionPermission: typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function',   // iOS
+    motionGranted: false,
+    motionDenied: false,
+    compassMissing: false,
+  };
+
+  // ---------- geo maths ----------
+  const rad = (d) => d * Math.PI / 180;
+  const deg = (r) => r * 180 / Math.PI;
+  const norm = (d) => ((d % 360) + 360) % 360;
+  const turn = (from, to) => ((to - from + 540) % 360) - 180;   // shortest signed turn
+
+  function distance(a, b) {
+    const dLat = rad(b.lat - a.lat);
+    const dLon = rad(b.lon - a.lon);
+    const s = Math.sin(dLat / 2) ** 2 +
+      Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+    return 2 * EARTH_R * Math.asin(Math.min(1, Math.sqrt(s)));
+  }
+
+  function bearing(a, b) {
+    const lat1 = rad(a.lat), lat2 = rad(b.lat), dLon = rad(b.lon - a.lon);
+    const y = Math.sin(dLon) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+    return norm(deg(Math.atan2(y, x)));
+  }
+
+  function formatDistance(m) {
+    if (m < 1000) return { num: String(m < 100 ? Math.round(m) : Math.round(m / 10) * 10), unit: 'm' };
+    const km = m / 1000;
+    return { num: km < 100 ? km.toFixed(1) : String(Math.round(km)), unit: 'km' };
+  }
+
+  const cardinal = (d) => ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(d / 45) % 8];
+
+  // ---------- heading ----------
+  function screenAngle() {
+    if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
+    return typeof window.orientation === 'number' ? window.orientation : 0;
+  }
+
+  // Heading of "forward" from the W3C orientation angles. Forward blends the top edge of the
+  // screen with the direction the back of the phone faces, so the result holds whether the
+  // phone lies flat, sits tilted in a handlebar mount or is held upright.
+  function headingFromEuler(alpha, beta, gamma, angle) {
+    const z = rad(alpha), x = rad(beta || 0), y = rad(gamma || 0), a = rad(angle);
+    const cX = Math.cos(x), cY = Math.cos(y), cZ = Math.cos(z);
+    const sX = Math.sin(x), sY = Math.sin(y), sZ = Math.sin(z);
+    // East and north parts of the device axes, from R = Rz(alpha) Rx(beta) Ry(gamma).
+    const right = [cZ * cY - sZ * sX * sY, sZ * cY + cZ * sX * sY];
+    const top = [-sZ * cX, cZ * cX];
+    const out = [cZ * sY + sZ * sX * cY, sZ * sY - cZ * sX * cY];
+    const east = Math.sin(a) * right[0] + Math.cos(a) * top[0] - out[0];
+    const north = Math.sin(a) * right[1] + Math.cos(a) * top[1] - out[1];
+    return norm(deg(Math.atan2(east, north)));
+  }
+
+  function onOrientation(e) {
+    let h = null;
+    if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+      if (e.webkitCompassAccuracy < 0) return;   // iOS reports -1 while the compass is unusable
+      h = norm(e.webkitCompassHeading + screenAngle());
+    } else if (e.absolute && e.alpha != null) {
+      h = headingFromEuler(e.alpha, e.beta, e.gamma, screenAngle());
+    }
+    if (h == null || isNaN(h)) return;
+    const first = state.compass == null;
+    state.compass = first ? h : norm(state.compass + turn(state.compass, h) * 0.3);
+    if (first) { state.compassMissing = false; updateText(); }
+  }
+
+  function listenOrientation() {
+    if (state.listening) return;
+    state.listening = true;
+    window.addEventListener('deviceorientationabsolute', onOrientation, true);
+    window.addEventListener('deviceorientation', onOrientation, true);
+    setTimeout(() => {
+      if (state.compass == null) { state.compassMissing = true; updateText(); }
+    }, 3000);
+  }
+
+  // iOS only shows its motion prompt from inside a tap, so this is called from click handlers.
+  function enableCompass() {
+    if (typeof DeviceOrientationEvent === 'undefined') { state.compassMissing = true; return; }
+    if (!state.needsMotionPermission) { listenOrientation(); return; }
+    if (state.motionGranted || state.motionDenied) return;
+    DeviceOrientationEvent.requestPermission().then((answer) => {
+      if (answer === 'granted') { state.motionGranted = true; listenOrientation(); }
+      else { state.motionDenied = true; state.compassMissing = true; }
+      updateText();
+    }).catch(() => updateText());
+  }
+
+  function activeHeading() {
+    if (state.mode === 'compass' && state.compass != null) return { deg: state.compass, src: 'compass' };
+    if (state.course != null) return { deg: state.course, src: 'course' };
+    return null;
+  }
+
+  // ---------- position ----------
+  function onPosition(p) {
+    const c = p.coords;
+    const here = { lat: c.latitude, lon: c.longitude, acc: c.accuracy };
+    state.pos = here;
+    state.geoError = null;
+
+    if (typeof c.heading === 'number' && !isNaN(c.heading) && c.speed > 1.5) {
+      state.course = c.heading;
+      state.anchor = here;
+    } else if (!state.anchor) {
+      state.anchor = here;
+    } else if (distance(state.anchor, here) > Math.max(15, c.accuracy * 1.5)) {
+      // Far enough from the last anchor that GPS jitter cannot fake a direction.
+      state.course = bearing(state.anchor, here);
+      state.anchor = here;
+    }
+    updateText();
+  }
+
+  function onPositionError(err) {
+    if (err.code === 1) state.geoError = 'denied';
+    updateText();
+  }
+
+  function startGps() {
+    if (state.watchId != null) return;
+    if (!window.isSecureContext) { state.geoError = 'insecure'; return; }
+    if (!('geolocation' in navigator)) { state.geoError = 'unsupported'; return; }
+    state.watchId = navigator.geolocation.watchPosition(onPosition, onPositionError, {
+      enableHighAccuracy: true, maximumAge: 2000, timeout: 30000,
+    });
+  }
+
+  // ---------- screen stays on while navigating ----------
+  let wakeLock = null;
+  async function keepAwake() {
+    if (!('wakeLock' in navigator) || document.hidden || $('nav').hidden) return;
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { /* low battery, no gesture */ }
+  }
+  function letSleep() {
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) keepAwake(); });
+
+  // ---------- dial ----------
+  const cards = [];
+  function buildDial() {
+    for (let a = 0; a < 360; a += 10) {
+      const major = a % 30 === 0;
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('y1', -122);
+      line.setAttribute('y2', major ? -108 : -114);
+      line.setAttribute('transform', 'rotate(' + a + ')');
+      line.setAttribute('class', major ? 'tick major' : 'tick');
+      $('ticks').appendChild(line);
+    }
+    [['N', 0], ['E', 90], ['S', 180], ['W', 270]].forEach(([letter, angle]) => {
+      const g = document.createElementNS(SVG_NS, 'g');
+      g.setAttribute('transform', 'rotate(' + angle + ') translate(0 -141)');
+      const text = document.createElementNS(SVG_NS, 'text');
+      text.textContent = letter;
+      text.setAttribute('class', letter === 'N' ? 'card north' : 'card');
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('dominant-baseline', 'central');
+      g.appendChild(text);
+      $('cards').appendChild(g);
+      cards.push({ el: text, angle });
+    });
+  }
+
+  const calm = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let ringShown = 0, bearingShown = 0, raf = 0, needleSet = false;
+
+  function frame() {
+    raf = requestAnimationFrame(frame);
+    const k = calm.matches ? 1 : 0.18;
+    const h = activeHeading();
+    ringShown += turn(ringShown, h ? -h.deg : 0) * k;
+    if (state.pos && state.dest) {
+      // Jump straight to the first reading so the needle never sweeps through wrong directions.
+      bearingShown += turn(bearingShown, bearing(state.pos, state.dest)) * (needleSet ? k : 1);
+      needleSet = true;
+    }
+
+    $('ring').setAttribute('transform', 'rotate(' + ringShown.toFixed(2) + ')');
+    $('needle').setAttribute('transform', 'rotate(' + (bearingShown + ringShown).toFixed(2) + ')');
+    // Keep the letters upright while the ring turns under them.
+    for (const c of cards) c.el.setAttribute('transform', 'rotate(' + (-(c.angle + ringShown)).toFixed(2) + ')');
+  }
+
+  // ---------- text and controls ----------
+  function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+
+  function updateText() {
+    if (!state.dest || $('nav').hidden) return;
+    const h = activeHeading();
+    const fix = state.pos;
+    const askCompass = state.needsMotionPermission && !state.motionGranted && !state.motionDenied;
+    let arrived = false;
+
+    $('dial').classList.toggle('no-fix', !fix);
+    $('dial').classList.toggle('north-up', !h);
+
+    if (fix) {
+      const d = distance(fix, state.dest);
+      const f = formatDistance(d);
+      const b = bearing(fix, state.dest);
+      arrived = d <= ARRIVE_M;
+      setText($('distNum'), f.num);
+      setText($('distUnit'), f.unit);
+      setText($('statBearing'), Math.round(b) % 360 + '° ' + cardinal(b));
+      setText($('statAcc'), '±' + (fix.acc < 1000 ? Math.round(fix.acc) + ' m' : (fix.acc / 1000).toFixed(1) + ' km'));
+    } else {
+      setText($('distNum'), '--');
+      setText($('distUnit'), '');
+      setText($('statBearing'), '--');
+      setText($('statAcc'), '--');
+    }
+
+    let hint;
+    if (state.geoError === 'insecure') hint = 'Location only works on a secure (https) address.';
+    else if (state.geoError === 'unsupported') hint = 'This browser cannot share your location.';
+    else if (state.geoError === 'denied') hint = 'Location is blocked for this page. Allow it in your browser settings, then reload.';
+    else if (!fix) hint = 'Finding your position…';
+    else if (arrived) hint = 'You have arrived.';
+    else if (fix.acc > WEAK_GPS_M) hint = 'GPS signal is weak. Direction and distance may be off.';
+    else if (!h && state.mode === 'compass' && askCompass) hint = 'North is up for now. Turn on the compass, or start moving, and the needle will turn with you.';
+    else if (!h) hint = 'North is up for now. Start moving and the needle will turn with you.';
+    else if (h.src === 'compass') hint = 'Hold the phone flat. The top edge is your forward.';
+    else if (state.mode === 'compass') hint = 'No compass signal, so the needle follows your direction of travel.';
+    else hint = 'The needle follows your direction of travel. Keep the phone pointing forward.';
+    setText($('hint'), hint);
+
+    $('compassBtn').hidden = !(askCompass && state.mode === 'compass');
+    $('modeCompass').setAttribute('aria-pressed', String(state.mode === 'compass'));
+    $('modeCourse').setAttribute('aria-pressed', String(state.mode === 'course'));
+  }
+
+  // ---------- views ----------
+  function showNav() {
+    $('setup').hidden = true;
+    $('nav').hidden = false;
+    $('destName').textContent = state.dest.name;
+    needleSet = false;
+    startGps();
+    if (!state.needsMotionPermission) enableCompass();
+    keepAwake();
+    if (!raf) frame();
+    updateText();
+  }
+
+  function showSetup() {
+    $('nav').hidden = true;
+    $('setup').hidden = false;
+    cancelAnimationFrame(raf);
+    raf = 0;
+    letSleep();
+    $('results').replaceChildren();
+    $('searchMsg').textContent = '';
+    renderRecent();
+  }
+
+  function choose(place) {
+    state.dest = place;
+    store.set('wc.dest', place);
+    const others = store.get('wc.recent', []).filter((p) => p.lat !== place.lat || p.lon !== place.lon);
+    store.set('wc.recent', [place].concat(others).slice(0, 5));
+    enableCompass();
+    showNav();
+  }
+
+  function placeItem(place) {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    const name = document.createElement('span');
+    name.className = 'place-name';
+    name.textContent = place.name;
+    btn.appendChild(name);
+    if (place.detail) {
+      const detail = document.createElement('span');
+      detail.className = 'place-detail';
+      detail.textContent = place.detail;
+      btn.appendChild(detail);
+    }
+    if (state.pos) {
+      const f = formatDistance(distance(state.pos, place));
+      const dist = document.createElement('span');
+      dist.className = 'place-dist';
+      dist.textContent = f.num + ' ' + f.unit;
+      btn.appendChild(dist);
+    }
+    btn.addEventListener('click', () => choose(place));
+    li.appendChild(btn);
+    return li;
+  }
+
+  function renderRecent() {
+    const recent = store.get('wc.recent', []);
+    $('recentWrap').hidden = recent.length === 0;
+    $('recent').replaceChildren(...recent.map(placeItem));
+  }
+
+  // ---------- search ----------
+  // Accepts "52.2297, 21.0122" or a pasted map link that carries "@52.2297,21.0122".
+  function parseCoords(text) {
+    const m = text.match(/@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/) ||
+      text.trim().match(/^(-?\d{1,2}(?:\.\d+)?)[\s,;]+(-?\d{1,3}(?:\.\d+)?)$/);
+    if (!m) return null;
+    const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+    return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
+  }
+
+  async function search(query) {
+    const coords = parseCoords(query);
+    if (coords) {
+      choose({ name: coords.lat.toFixed(5) + ', ' + coords.lon.toFixed(5), detail: 'Coordinates', lat: coords.lat, lon: coords.lon });
+      return;
+    }
+    $('results').replaceChildren();
+    $('searchMsg').textContent = 'Searching…';
+    $('searchBtn').disabled = true;
+    try {
+      const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=' + encodeURIComponent(query);
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const places = (await res.json()).map((r) => {
+        const parts = String(r.display_name || '').split(', ');
+        const name = r.name || parts[0] || query;
+        return {
+          name,
+          detail: (parts[0] === name ? parts.slice(1) : parts).join(', '),
+          lat: parseFloat(r.lat),
+          lon: parseFloat(r.lon),
+        };
+      }).filter((p) => !isNaN(p.lat) && !isNaN(p.lon));
+      $('results').replaceChildren(...places.map(placeItem));
+      $('searchMsg').textContent = places.length ? '' : 'Nothing found for "' + query + '". Try adding a region or country.';
+    } catch (e) {
+      $('searchMsg').textContent = 'Search needs an internet connection. You can also paste coordinates, like 52.2297, 21.0122.';
+    } finally {
+      $('searchBtn').disabled = false;
+    }
+  }
+
+  // ---------- wiring ----------
+  $('searchForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const query = $('q').value.trim();
+    if (query) search(query);
+  });
+  $('changeBtn').addEventListener('click', showSetup);
+  $('compassBtn').addEventListener('click', enableCompass);
+  $('modeCompass').addEventListener('click', () => setMode('compass'));
+  $('modeCourse').addEventListener('click', () => setMode('course'));
+
+  function setMode(mode) {
+    state.mode = mode;
+    store.set('wc.mode', mode);
+    if (mode === 'compass') enableCompass();
+    updateText();
+  }
+
+  buildDial();
+  if (state.dest) showNav(); else showSetup();
+
+  // Lets the page reopen without signal once it has been loaded.
+  if ('serviceWorker' in navigator && window.isSecureContext) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+})();
+</script>
+</body>
+</html>
